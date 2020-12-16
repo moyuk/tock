@@ -354,4 +354,13 @@ impl<'a> Power<'a> {
     pub fn get_gpregret(&self) -> u32 {
         self.registers.gpregret.get()
     }
+
+    /// Set the value of the GPREGRET (general purpose retention register)
+    /// register.
+    ///
+    /// This is used to set a flag before a reset to instruct the bootloader to
+    /// stay in the bootloader mode.
+    pub fn set_gpregret(&self, val: u32) {
+        self.registers.gpregret.set(val);
+    }
 }
