@@ -323,6 +323,9 @@ mod detail {
             self.ptr.set(slice.as_ptr() as *const u8);
             self.maxcnt.write(Count::MAXCNT.val(slice.len() as u32));
         }
+        pub fn amount(&self) -> u32 {
+            self.amount.get()
+        }
     }
 }
 
@@ -708,6 +711,7 @@ pub struct Usbd<'a> {
     client: OptionalCell<&'a dyn hil::usb::Client<'a>>,
     descriptors: [Endpoint<'a>; NUM_ENDPOINTS],
     power: OptionalCell<&'a power::Power<'a>>,
+    saved_len: Cell<u32>,
 }
 
 impl<'a> Usbd<'a> {
@@ -728,6 +732,7 @@ impl<'a> Usbd<'a> {
                 Endpoint::new(),
             ],
             power: OptionalCell::empty(),
+            saved_len: Cell::new(0),
         }
     }
 
@@ -1130,6 +1135,8 @@ impl<'a> Usbd<'a> {
         let saved_inter = self.registers.intenset.extract();
         self.disable_all_interrupts();
 
+        kernel::debug!("int");
+
         let active_events = self.active_events(&saved_inter);
         let events_to_process = saved_inter.bitand(active_events.get());
 
@@ -1156,6 +1163,7 @@ impl<'a> Usbd<'a> {
         // Note: isochronous endpoint receives a dedicated ENDISOOUT interrupt instead.
         for ep in 0..NUM_ENDPOINTS {
             if events_to_process.is_set(inter_endepout(ep)) {
+                kernel::debug!("endepout {}", ep);
                 self.handle_endepout(ep);
             }
         }
@@ -1168,7 +1176,9 @@ impl<'a> Usbd<'a> {
         if events_to_process.is_set(Interrupt::USBEVENT) {
             self.handle_usbevent();
         }
+
         if events_to_process.is_set(Interrupt::EPDATA) {
+            kernel::debug!("epdata");
             self.handle_epdata();
         }
 
@@ -1283,6 +1293,7 @@ impl<'a> Usbd<'a> {
     }
 
     fn handle_usbreset(&self) {
+        kernel::debug!("USBRESET");
         for (ep, desc) in self.descriptors.iter().enumerate() {
             match desc.state.get() {
                 EndpointState::Disabled => {}
@@ -1433,12 +1444,19 @@ impl<'a> Usbd<'a> {
             }
             1..=7 => {
                 // Notify the client about the new packet.
-                let packet_bytes = self.registers.size_epout[endpoint].get();
+                // let packet_bytes = self.registers.size_epout[endpoint].get();
+                // let packet_bytes = self.registers.epout[endpoint].amount();
                 let (transfer_type, in_state, out_state) =
                     self.descriptors[endpoint].state.get().bulk_state();
                 assert_eq!(out_state, Some(BulkOutState::OutDma));
 
-                self.debug_out_packet(packet_bytes as usize, endpoint);
+                // self.debug_out_packet(packet_bytes as usize, endpoint);
+
+                let packet_bytes = if endpoint == 3 {
+                    self.saved_len.get()
+                } else {
+                    self.registers.size_epout[endpoint].get()
+                };
 
                 self.client.map(|client| {
                     let result = client.packet_out(transfer_type, endpoint, packet_bytes);
@@ -1446,7 +1464,7 @@ impl<'a> Usbd<'a> {
                     let new_out_state = match result {
                         hil::usb::OutResult::Ok => {
                             // Indicate that the endpoint is ready to receive data again.
-                            self.registers.size_epout[endpoint].set(0);
+                            // self.registers.size_epout[endpoint].set(0);
                             BulkOutState::Init
                         }
 
@@ -1553,15 +1571,19 @@ impl<'a> Usbd<'a> {
         // Endpoint 8 (isochronous) doesn't receive any EPDATA event.
         for ep in 1..NUM_ENDPOINTS {
             if epdatastatus.is_set(status_epout(ep)) {
+                kernel::debug!("epdo {}", ep);
                 let (transfer_type, in_state, out_state) =
                     self.descriptors[ep].state.get().bulk_state();
                 assert!(out_state.is_some());
+                self.saved_len.set(self.registers.size_epout[ep].get());
                 match out_state.unwrap() {
                     BulkOutState::Init => {
+                        // kernel::debug!("s {}", self.registers.size_epout[ep].get());
                         // The endpoint is ready to receive data. Request a transmit_out.
                         self.descriptors[ep].request_transmit_out.set(true);
                     }
                     BulkOutState::OutDelay => {
+                        kernel::debug!("outdelay");
                         // The endpoint will be resumed later by the client application with transmit_out().
                     }
                     BulkOutState::OutData | BulkOutState::OutDma => {
@@ -1712,6 +1734,7 @@ impl<'a> Usbd<'a> {
                 if endpoint == 0 {
                     self.transmit_in_ep0();
                 } else {
+                    kernel::debug!("dma in {}", endpoint);
                     self.transmit_in(endpoint);
                 }
                 if self.dma_pending.get() {
@@ -1722,6 +1745,7 @@ impl<'a> Usbd<'a> {
                 if endpoint == 0 {
                     self.transmit_out_ep0();
                 } else {
+                    kernel::debug!("dma out {}", endpoint);
                     self.transmit_out(endpoint);
                 }
                 if self.dma_pending.get() {
@@ -2048,7 +2072,7 @@ impl<'a> hil::usb::UsbController<'a> for Usbd<'a> {
     }
 
     fn endpoint_resume_out(&self, endpoint: usize) {
-        debug_events!("endpoint_resume_out({})", endpoint);
+        kernel::debug!("endpoint_resume_out({})", endpoint);
 
         let (transfer_type, in_state, out_state) =
             self.descriptors[endpoint].state.get().bulk_state();
