@@ -526,12 +526,10 @@ impl<'a, U: hil::usb::UsbController<'a>, A: 'a + Alarm<'a>> hil::usb::Client<'a>
 
                     // How many more bytes can we store in our RX buffer?
                     let available_bytes = rx_buf.len() - rx_offset;
-                    kernel::debug!("pkt bt {}", packet_bytes);
                     let copy_length = cmp::min(packet_bytes as usize, available_bytes);
 
                     // Do the copy into the RX buffer.
                     let packet = self.buffer(endpoint);
-                    kernel::debug!("{:x} {:x}", packet[0].get(), packet[1].get());
                     for i in 0..copy_length {
                         rx_buf[rx_offset + i] = packet[i].get();
                     }
